@@ -1,1 +1,1 @@
-# CodeInHand
+Este é um repositório onde tudo está sendo feito à mão.
