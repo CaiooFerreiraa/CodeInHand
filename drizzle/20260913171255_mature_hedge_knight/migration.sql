@@ -1,0 +1,1 @@
+ALTER TABLE "mao"."session" DROP COLUMN "access_token";
