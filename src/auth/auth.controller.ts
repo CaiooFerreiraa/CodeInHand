@@ -1,12 +1,7 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post, UseGuards, Request } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { Public } from 'src/shared/decorators/auth.decorators';
-import { ConfigService } from '@nestjs/config';
-
-type UserLogin = {
-  username: string,
-  password: string
-}
+import { UserLogin, UserLogout, UserRefresh } from './dto/auth-user.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -22,13 +17,14 @@ export class AuthController {
     return tokens
   }
 
-  @Get('/logout')
-  getProfile(@Request() req: any) {
-    return req.user
+  @Post('/logout')
+  @HttpCode(HttpStatus.OK)
+  async logout(@Body() signout: UserLogout) {
+    await this.authService.revokeToken(signout.token);
   }
     
-  @Post("refresh")
-  async refreshToken(@Body() body: any ) {
+  @Post("/refresh")
+  async refreshToken(@Body() body: UserRefresh) {
     return 200;
   }
 }

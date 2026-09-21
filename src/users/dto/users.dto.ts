@@ -16,6 +16,4 @@ export class UserDataDto {
   name: string
 }
 
-export class InsertDataUserDto extends OmitType(UserDataDto, ['uid'] as const) {
-  
-}
+export class InsertDataUserDto extends OmitType(UserDataDto, ['uid'] as const) {}

@@ -11,15 +11,25 @@ export const usersTable = maoSchema.table('users', {
   password: varchar({ length: 255 }).notNull()
 })
 
-export const sessionTables = maoSchema.table('session', {
-  id: uuid().primaryKey(),
-  refreshToken: varchar("refresh_token", {length: 255}).notNull(),
+export const sessionTable = maoSchema.table('session', {
+  id: uuid('id').primaryKey(),
   createdAt: timestamp("created_at", { mode: 'date' }).defaultNow(),
   updatedAt: timestamp("updated_at", { mode: 'date' }),
-  revokedAt: timestamp("revoked_at", { mode: 'date' }),
   
   userId: integer("user_id").references(() => usersTable.id, {
     onDelete: "cascade",
     onUpdate: "cascade"
   })
+})
+
+export const tokensTable = maoSchema.table('tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  token: varchar('token', { length: 255 }).notNull(),
+  createdAt: timestamp('created_at', {mode: 'date'}).defaultNow(),
+  revokedAt: timestamp('revoked_at', { mode: 'date' }),
+
+  sessionId: uuid('session_id').references(() => sessionTable.id, {
+    onDelete: 'cascade',
+    onUpdate: 'cascade'
+  }).notNull()
 })

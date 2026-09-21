@@ -2,16 +2,17 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { UserDataDto } from 'src/users/dto/users.dto';
 import { UsersService } from 'src/users/users.service';
 import { JwtService } from '@nestjs/jwt';
-import { randomUUID, createHash } from 'crypto';
+import { randomUUID } from 'crypto';
 import { ConfigService } from '@nestjs/config';
-import { db, sessionTables } from 'src/db/schema';
+import { db, sessionTable, tokensTable } from 'src/db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
+import { hash } from '../shared/utils/hash';
 
 type PayloadUser = {
-  sub: number,
-  username: string,
-  sessionId: string
-}
+  sub: number;
+  username: string;
+  sessionId: string;
+};
 
 @Injectable()
 export class AuthService {
@@ -31,7 +32,11 @@ export class AuthService {
 
     const sessionId = randomUUID();
 
-    const payload: PayloadUser = { sub: user.uid, username: user.name, sessionId };
+    const payload: PayloadUser = {
+      sub: user.uid,
+      username: user.name,
+      sessionId,
+    };
 
     const access_token = await this.jwtService.signAsync(payload);
 
@@ -40,13 +45,12 @@ export class AuthService {
       expiresIn: '7d',
     });
 
-    const hashRefreshToken = this.#hash256(refresh_token);
+    const hashRefreshToken = hash(refresh_token);
 
     try {
-      await db.insert(sessionTables).values({
-        id: sessionId,
-        userId: user.uid,
-        refreshToken: hashRefreshToken
+      await db.insert(tokensTable).values({
+        token: hashRefreshToken,
+        sessionId: sessionId,
       });
     } catch (error) {
       throw error;
@@ -58,43 +62,57 @@ export class AuthService {
     };
   }
 
-  #hash256(token: string) {
-    return createHash('sha256').update(token).digest('hex');
-  }
-
   async refreshToken(refreshTokenWeb: string) {
     try {
-      const payload: PayloadUser = await this.jwtService.verifyAsync(refreshTokenWeb, {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-      });
+      const payload: PayloadUser = await this.jwtService.verifyAsync(
+        refreshTokenWeb,
+        {
+          secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+        },
+      );
 
       const [session] = await db
         .select({
-          refreshToken: sessionTables.refreshToken
+          token: tokensTable.token,
         })
-        .from(sessionTables)
+        .from(tokensTable)
         .where(
           and(
-            eq(sessionTables.id, payload.sessionId), 
-            isNull(sessionTables.revokedAt)
-          )
-        )
+            eq(tokensTable.sessionId, payload.sessionId),
+            isNull(tokensTable.revokedAt),
+          ),
+        );
 
-      if (!session) {
-        throw new UnauthorizedException('Sessão inválida ou expirada')
-      }
+      if (!session)
+        throw new UnauthorizedException('Sessão inválida ou expirada');
 
-      const hash = this.#hash256(refreshTokenWeb)
+      const hashRefreshTokenWeb = hash(refreshTokenWeb);
 
-      if (hash !== session.refreshToken) throw new UnauthorizedException("Refresh token inválido ou expirado") 
+      if (hashRefreshTokenWeb !== session.token)
+        throw new UnauthorizedException('Refresh token inválido ou expirado');
 
       const newAccessToken = await this.#generateAccessToken(payload);
 
       return {
-        access_token: newAccessToken
+        access_token: newAccessToken,
       };
     } catch (error) {
       throw new UnauthorizedException('Refresh token inválido ou expirado');
+    }
+  }
+
+  async revokeToken(token: string) {
+    const hashToken = hash(token);
+
+    try {
+      await db
+        .update(tokensTable)
+        .set({ revokedAt: new Date() })
+        .where(
+          eq(tokensTable.token, hashToken)
+        );
+    } catch (error) {
+      throw new UnauthorizedException("Token inválido ou expirado")
     }
   }
 
