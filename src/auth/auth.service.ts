@@ -5,13 +5,16 @@ import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { db, sessionTable, tokensTable } from 'src/db/schema';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, EmptyRelations, eq, isNull } from 'drizzle-orm';
 import { hash } from '../shared/utils/hash';
+import { NodePgQueryResultHKT } from 'drizzle-orm/node-postgres';
+import { PgAsyncTransaction } from 'drizzle-orm/pg-core';
 
 type PayloadUser = {
   sub: number;
   username: string;
   sessionId: string;
+  jti: string;
 };
 
 @Injectable()
@@ -22,7 +25,7 @@ export class AuthService {
     private readonly configService: ConfigService,
   ) {}
 
-  async generateTokens(
+  async login(
     username: string,
     pass: string,
   ): Promise<{ access_token: string; refresh_token: string }> {
@@ -30,12 +33,11 @@ export class AuthService {
 
     if (user.password !== pass) throw new UnauthorizedException();
 
-    const sessionId = randomUUID();
-
     const payload: PayloadUser = {
       sub: user.uid,
       username: user.name,
-      sessionId,
+      sessionId: randomUUID(),
+      jti: randomUUID(),
     };
 
     const access_token = await this.jwtService.signAsync(payload);
@@ -48,9 +50,17 @@ export class AuthService {
     const hashRefreshToken = hash(refresh_token);
 
     try {
-      await db.insert(tokensTable).values({
-        token: hashRefreshToken,
-        sessionId: sessionId,
+      await db.transaction(async (tx) => {
+        await tx.insert(sessionTable).values({
+          id: payload.sessionId,
+          userId: payload.sub,
+        });
+
+        await tx.insert(tokensTable).values({
+          id: payload.jti,
+          token: hashRefreshToken,
+          sessionId: payload.sessionId,
+        });
       });
     } catch (error) {
       throw error;
@@ -62,7 +72,7 @@ export class AuthService {
     };
   }
 
-  async refreshToken(refreshTokenWeb: string) {
+  async refresh(refreshTokenWeb: string) {
     try {
       const payload: PayloadUser = await this.jwtService.verifyAsync(
         refreshTokenWeb,
@@ -76,10 +86,13 @@ export class AuthService {
           token: tokensTable.token,
         })
         .from(tokensTable)
+        .innerJoin(sessionTable, eq(sessionTable.id, tokensTable.sessionId))
         .where(
           and(
             eq(tokensTable.sessionId, payload.sessionId),
+            eq(tokensTable.id, payload.jti),
             isNull(tokensTable.revokedAt),
+            isNull(sessionTable.revokedAt),
           ),
         );
 
@@ -91,32 +104,103 @@ export class AuthService {
       if (hashRefreshTokenWeb !== session.token)
         throw new UnauthorizedException('Refresh token inválido ou expirado');
 
-      const newAccessToken = await this.#generateAccessToken(payload);
+      const tokens = await db.transaction(async (tx) => {
+        await this.#revokeRefreshToken(payload.jti, payload.sessionId, tx);
 
-      return {
-        access_token: newAccessToken,
-      };
+        return await this.#generateTokens(payload, tx);
+      });
+
+      return tokens;
     } catch (error) {
       throw new UnauthorizedException('Refresh token inválido ou expirado');
     }
   }
 
-  async revokeToken(token: string) {
-    const hashToken = hash(token);
+  async logout(token: string) {
+    const payload: PayloadUser = await this.jwtService.verifyAsync(token, {
+      secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+    });
 
-    try {
-      await db
-        .update(tokensTable)
-        .set({ revokedAt: new Date() })
+    const failedToRevoked = await db.transaction(async (tx) => {
+      const data = new Date();
+
+      const lineUpdateSessions = await tx
+        .update(sessionTable)
+        .set({ revokedAt: data })
         .where(
-          eq(tokensTable.token, hashToken)
-        );
-    } catch (error) {
-      throw new UnauthorizedException("Token inválido ou expirado")
-    }
+          and(
+            eq(sessionTable.id, payload.sessionId),
+            isNull(sessionTable.revokedAt),
+          ),
+        )
+        .returning();
+
+      await tx
+        .update(tokensTable)
+        .set({ revokedAt: data })
+        .where(
+          and(
+            eq(tokensTable.sessionId, payload.sessionId),
+            isNull(tokensTable.revokedAt),
+          ),
+        )
+
+      return lineUpdateSessions.length === 0
+    });
+
+    if (failedToRevoked)
+      throw new Error('Houve erro na atualização do banco de dados');
   }
 
-  async #generateAccessToken(payload: PayloadUser) {
-    return await this.jwtService.signAsync(payload);
+  async #revokeRefreshToken(
+    jti: string,
+    sessionId: string,
+    tx: PgAsyncTransaction<NodePgQueryResultHKT, EmptyRelations>,
+  ) {
+
+    const lineUpdateTokens = await tx
+      .update(tokensTable)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(tokensTable.id, jti),
+          eq(tokensTable.sessionId, sessionId), 
+          isNull(tokensTable.revokedAt)
+        ),
+      )
+      .returning();
+
+    if (lineUpdateTokens.length === 0)
+      throw new Error('Não houve nenhuma alteração no banco');
+  }
+
+  async #generateTokens(
+    payload: PayloadUser,
+    tx: PgAsyncTransaction<NodePgQueryResultHKT, EmptyRelations>,
+  ) {
+    const newPayload: PayloadUser = {
+      ...payload,
+      jti: randomUUID()
+    }
+
+    const refresh_token = await this.jwtService.signAsync(newPayload, {
+      secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
+      expiresIn: '7d',
+    });
+
+    try {
+      await tx.insert(tokensTable).values({
+        sessionId: newPayload.sessionId,
+        token: hash(refresh_token),
+        id: newPayload.jti,
+      });
+    } catch (error) {
+      throw error;
+    }
+
+    return {
+      access_token: await this.jwtService.signAsync(newPayload),
+      refresh_token,
+    };
   }
 }

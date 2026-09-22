@@ -13,18 +13,18 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post("/login")
   async login(@Body() signInDto: UserLogin) {
-    const tokens = await this.authService.generateTokens(signInDto.username, signInDto.password)
+    const tokens = await this.authService.login(signInDto.username, signInDto.password)
     return tokens
   }
 
   @Post('/logout')
   @HttpCode(HttpStatus.OK)
   async logout(@Body() signout: UserLogout) {
-    await this.authService.revokeToken(signout.token);
+    await this.authService.logout(signout.token);
   }
     
   @Post("/refresh")
   async refreshToken(@Body() body: UserRefresh) {
-    return 200;
+    return await this.authService.refresh(body.token);
   }
 }

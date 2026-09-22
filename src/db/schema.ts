@@ -15,6 +15,7 @@ export const sessionTable = maoSchema.table('session', {
   id: uuid('id').primaryKey(),
   createdAt: timestamp("created_at", { mode: 'date' }).defaultNow(),
   updatedAt: timestamp("updated_at", { mode: 'date' }),
+  revokedAt: timestamp('revoked_at', { mode: 'date' }),
   
   userId: integer("user_id").references(() => usersTable.id, {
     onDelete: "cascade",
